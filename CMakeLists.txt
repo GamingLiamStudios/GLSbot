@@ -8,12 +8,17 @@ endif()
 set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/.cmake)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/GLSbot)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/GLSbot)
-option(BUILD_SHARED_LIBS "" off)
+option(BUILD_SHARED_LIBS "" OFF)
 
-# include(fetch_libraries)
+find_package(OpenSSL REQUIRED COMPONENTS SSL Crypto)
+
+include(fetch_libraries)
 
 set(SOURCE_FILES
     source/main.c
+
+    source/websocket/websocket.c
+    source/websocket/socket.c
 )
 
 add_executable(main-executable ${SOURCE_FILES})
@@ -24,4 +29,4 @@ set_target_properties(main-executable PROPERTIES OUTPUT_NAME "GLSbot")
 target_include_directories(main-executable PUBLIC "extern")
 target_include_directories(main-executable PUBLIC "source") # to allow paths relative to project root
 
-target_link_libraries(main-executable PRIVATE m)
+target_link_libraries(main-executable PRIVATE m zlib json-c::json-c OpenSSL::SSL OpenSSL::Crypto)
