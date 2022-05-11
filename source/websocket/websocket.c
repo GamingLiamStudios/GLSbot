@@ -91,38 +91,16 @@ int websocket_connect(struct websocket *ws, const char *url)
     case 0: path = "/"; break;
     case 1:
     {
-        tokens    = strtok(tokens, "/");
-        char *tok = strtok(NULL, "/");
-        path      = malloc(strlen(tok) + 2);
-        strcpy(path, "/");
-        strcat(path, tok);
-
-        tok = NULL;
-        while ((tok = strtok(NULL, "/")) != NULL)
-        {
-            // TODO: Handle failure of realloc
-            path = realloc(path, strlen(path) + strlen(tok) + 2);    // '/' + \0
-            strcat(path, "/");
-            strcat(path, tok);
-        }
+        tokens = strtok(tokens, "/");
+        path   = strtok(NULL, "/");
+        for (char *tok = strtok(NULL, "/"); tok != NULL; tok = strtok(NULL, "/")) *(tok - 1) = '/';
         break;
     }
     case 2:
     {
-        tokens    = strtok(tokens, "?");
-        char *tok = strtok(NULL, "?");
-        path      = malloc(strlen(tok) + 3);    // '/?' + \0
-        strcpy(path, "/?");
-        strcat(path, tok);
-
-        tok = NULL;
-        while ((tok = strtok(NULL, "?")) != NULL)
-        {
-            // TODO: Handle failure of realloc
-            path = realloc(path, strlen(path) + strlen(tok) + 2);    // '?' + \0
-            strcat(path, "?");
-            strcat(path, tok);
-        }
+        tokens = strtok(tokens, "?");
+        path   = strtok(NULL, "?");
+        for (char *tok = strtok(NULL, "?"); tok != NULL; tok = strtok(NULL, "?")) *(tok - 1) = '?';
         break;
     }
     }
@@ -169,7 +147,6 @@ int websocket_connect(struct websocket *ws, const char *url)
 
     free(key);
     // free(key_b64);
-    if (strcmp(path, "/") != 0) free(path);
 
     // Connect to server
     int porti  = atoi(port);
@@ -177,13 +154,21 @@ int websocket_connect(struct websocket *ws, const char *url)
     if (ws->socket.sock == NULL)
     {
         printf("ERROR: Failed to connect to server\n");
+        free(key_b64);
         return -1;
     }
 
     free(tokens_main);
 
     // Send handshake request
-    socket_send(&ws->socket, request, req_size);
+    if (socket_send(&ws->socket, request, req_size) < 0)
+    {
+        printf("ERROR: Failed to send handshake request\n");
+        free(request);
+        free(key_b64);
+        socket_close(ws->socket);
+        return -1;
+    }
     free(request);
 
     // While we wait for that, let's make the SHA-1 hash for verification
@@ -192,6 +177,7 @@ int websocket_connect(struct websocket *ws, const char *url)
     char       *vstr_cat = malloc(vstr_len + 1);
     strcpy(vstr_cat, key_b64);
     strcat(vstr_cat, vstr);
+    free(key_b64);
 
     u8 *vstr_sha1 = malloc(SHA_DIGEST_LENGTH);
     SHA1((const u8 *) vstr_cat, vstr_len, vstr_sha1);
@@ -204,6 +190,14 @@ int websocket_connect(struct websocket *ws, const char *url)
     char *response = malloc(1024);
     memset(response, 0, 1024);
     int res_size = socket_recv(&ws->socket, response, 1024);
+    if (res_size < 0)
+    {
+        printf("ERROR: Failed to receive handshake response\n");
+        free(response);
+        free(sha1_b64);
+        socket_close(ws->socket);
+        return -1;
+    }
 
     // Verify we got a known response
     char *line = strtok(response, "\r\n");
@@ -211,6 +205,8 @@ int websocket_connect(struct websocket *ws, const char *url)
     {
         printf("ERROR: Unknown response\n%s\n", line);
         free(response);
+        free(sha1_b64);
+        socket_close(ws->socket);
         return -1;
     }
 
@@ -223,7 +219,8 @@ int websocket_connect(struct websocket *ws, const char *url)
         {
             printf("ERROR: Malformed response\n");
             free(response);
-            if (sha1_b64) free(sha1_b64);
+            free(sha1_b64);
+            socket_close(ws->socket);
             return -1;
         }
         char *key  = line;
@@ -235,7 +232,8 @@ int websocket_connect(struct websocket *ws, const char *url)
             {
                 printf("ERROR: Invalid Upgrade\n");
                 free(response);
-                if (sha1_b64) free(sha1_b64);
+                free(sha1_b64);
+                socket_close(ws->socket);
                 return -1;
             }
             found--;
@@ -247,7 +245,8 @@ int websocket_connect(struct websocket *ws, const char *url)
             {
                 printf("ERROR: Invalid Connection\n");
                 free(response);
-                if (sha1_b64) free(sha1_b64);
+                free(sha1_b64);
+                socket_close(ws->socket);
                 return -1;
             }
             found--;
@@ -259,7 +258,8 @@ int websocket_connect(struct websocket *ws, const char *url)
             {
                 printf("ERROR: Invalid Sec-WebSocket-Accept\n");
                 free(response);
-                if (sha1_b64) free(sha1_b64);
+                free(sha1_b64);
+                socket_close(ws->socket);
                 return -1;
             }
             found--;
@@ -271,7 +271,8 @@ int websocket_connect(struct websocket *ws, const char *url)
         {
             printf("ERROR: Invalid header %s\n", key);
             free(response);
-            if (sha1_b64) free(sha1_b64);
+            free(sha1_b64);
+            socket_close(ws->socket);
             return -1;
         }
     }
@@ -280,7 +281,8 @@ int websocket_connect(struct websocket *ws, const char *url)
     {
         printf("ERROR: Invalid response\n");
         free(response);
-        if (sha1_b64) free(sha1_b64);
+        free(sha1_b64);
+        socket_close(ws->socket);
         return -1;
     }
 

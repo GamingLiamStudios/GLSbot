@@ -119,11 +119,14 @@ void socket_close(struct socket socket)
         SSL_CTX_free(ssl->ctx);
         free(ssl);
 
+        socket.sock = NULL;
         return;
     }
 
     shutdown(*(int *) socket.sock, SHUT_RDWR);
     free(socket.sock);
+
+    socket.sock = NULL;
 }
 
 int socket_send(struct socket *socket, const char *data, int size)
