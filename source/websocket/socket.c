@@ -161,7 +161,7 @@ int socket_send(struct socket *socket, const char *data, int size)
         if (BIO_should_retry(ssl->bio)) return socket_send(socket, data, size);
 
         // TODO: Do this better
-        printf("BIO_write: %s\n", BIO_get_retry_reason(ssl->bio));
+        printf("BIO_write: %d\n", BIO_get_retry_reason(ssl->bio));
         return -1;
     }
 
@@ -195,9 +195,9 @@ int socket_recv(struct socket *socket, char *data, int size)
         if (BIO_should_retry(ssl->bio)) return socket_recv(socket, data, size);
 
         // TODO: Do this better
-        printf("BIO_read: %s\n", BIO_get_retry_reason(ssl->bio));
+        printf("BIO_read: %d\n", BIO_get_retry_reason(ssl->bio));
         return -1;
     }
 
-    return ret
+    return ret;
 }
