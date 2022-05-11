@@ -131,20 +131,73 @@ void socket_close(struct socket socket)
 
 int socket_send(struct socket *socket, const char *data, int size)
 {
-    if (!socket->is_ssl) return send(*(int *) socket->sock, data, size, 0);
+    if (!socket->is_ssl)
+    {
+        int ret = send(*(int *) socket->sock, data, size, 0);
+        if (ret == -1)
+        {
+            printf("send: %s\n", strerror(errno));
+            return -1;
+        }
+        return ret;
+    }
 
-    // TODO: Error handling
     struct ssl_context *ssl = (struct ssl_context *) socket->sock;
+    int                 ret = BIO_write(ssl->bio, data, size);
 
-    return BIO_write(ssl->bio, data, size);
+    if (ret != size)
+    {
+        ret = socket_send(socket, data + ret, size - ret);
+        if (ret < 0) return -1;
+    }
+    if (ret <= 0)
+    {
+        if (ret == -2)
+        {
+            printf("BIO_write is not implemented\n");
+            return -1;
+        }
+
+        if (BIO_should_retry(ssl->bio)) return socket_send(socket, data, size);
+
+        // TODO: Do this better
+        printf("BIO_write: %s\n", BIO_get_retry_reason(ssl->bio));
+        return -1;
+    }
+
+    return ret;
 }
 
 int socket_recv(struct socket *socket, char *data, int size)
 {
-    if (!socket->is_ssl) return recv(*(int *) socket->sock, data, size, 0);
+    if (!socket->is_ssl)
+    {
+        int ret = recv(*(int *) socket->sock, data, size, 0);
+        if (ret == -1)
+        {
+            printf("recv: %s\n", strerror(errno));
+            return -1;
+        }
+        return ret;
+    }
 
-    // TODO: Error handling
     struct ssl_context *ssl = (struct ssl_context *) socket->sock;
+    int                 ret = BIO_read(ssl->bio, data, size);
 
-    return BIO_read(ssl->bio, data, size);
+    if (ret <= 0)
+    {
+        if (ret == -2)
+        {
+            printf("BIO_read is not implemented\n");
+            return -1;
+        }
+
+        if (BIO_should_retry(ssl->bio)) return socket_recv(socket, data, size);
+
+        // TODO: Do this better
+        printf("BIO_read: %s\n", BIO_get_retry_reason(ssl->bio));
+        return -1;
+    }
+
+    return ret
 }
