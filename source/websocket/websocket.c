@@ -22,32 +22,25 @@ char *base64_encode(unsigned char *data, int size)
 
     while (i < size)
     {
-        u8 b[3];
+        u8 b[3] = { 0 };
+
+        int l = 0;
         if (i + 3 > size)
         {
-            // Copy remaining bytes
-            int l = 0;
             int r = size - i;
             while (r--) b[l++] = data[i++];
-            while (l < 3) b[l++] = 0;
         }
         else
         {
-            b[0] = data[i++];
-            b[1] = data[i++];
-            b[2] = data[i++];
+            b[l++] = data[i++];
+            b[l++] = data[i++];
+            b[l++] = data[i++];
         }
 
         base64[j++] = base64_chars[b[0] >> 2];
-        base64[j++] = base64_chars[((b[0] & 0b00000011) << 4) | (b[1] >> 4)];
-        if (b[1] != 0)
-            base64[j++] = base64_chars[((b[1] & 0b00001111) << 2) | (b[2] >> 6)];
-        else
-            base64[j++] = base64_pad;
-        if (b[2] != 0)
-            base64[j++] = base64_chars[b[2] & 0b00111111];
-        else
-            base64[j++] = base64_pad;
+        base64[j++] = base64_chars[((b[0] & 0x03) << 4) | (b[1] >> 4)];
+        base64[j++] = (l > 1) ? base64_chars[((b[1] & 0x0F) << 2) | (b[2] >> 6)] : base64_pad;
+        base64[j++] = (l > 2) ? base64_chars[b[2] & 0x3F] : base64_pad;
     }
 
     base64[base64_size] = '\0';
@@ -57,10 +50,6 @@ char *base64_encode(unsigned char *data, int size)
 
 int websocket_connect(struct websocket *ws, const char *url)
 {
-    char *tokens_main = malloc(strlen(url) + 1);
-    strcpy(tokens_main, url);
-    char *tokens = tokens_main;
-
     struct websocket websocket;
     websocket.is_connected = false;
 
@@ -78,51 +67,32 @@ int websocket_connect(struct websocket *ws, const char *url)
     // Parse URL
     // URL format: ws[s]://host[:port]/path?query
 
-    char *host, *port, *path;
-    char *ws_type = strtok(tokens, "/");
-    tokens        = strtok(NULL, "/");
-    while ((port = strtok(NULL, "/")) != NULL) *(port - 1) = '/';    // uhhhhhh
-
-    // Parse path
-    // 0 = no, 1 = /, 2 = ?
-    int is_path = strchr(tokens, '/') != NULL ? 1 : (strchr(tokens, '?') != NULL ? 2 : 0);
-    switch (is_path)
-    {
-    case 0: path = "/"; break;
-    case 1:
-    {
-        tokens = strtok(tokens, "/");
-        path   = strtok(NULL, "/");
-        for (char *tok = strtok(NULL, "/"); tok != NULL; tok = strtok(NULL, "/")) *(tok - 1) = '/';
-        break;
-    }
-    case 2:
-    {
-        tokens = strtok(tokens, "?");
-        path   = strtok(NULL, "?");
-        for (char *tok = strtok(NULL, "?"); tok != NULL; tok = strtok(NULL, "?")) *(tok - 1) = '?';
-        break;
-    }
-    }
-
     // Parse port
-    bool is_ssl = strcmp(ws_type, "wss:") == 0;
-    port        = strcmp(ws_type, "ws:") == 0 ? "80" : (is_ssl ? "443" : NULL);
+    bool  is_ssl = strncmp(url, "wss://", 6) == 0;
+    char *port   = strncmp(url, "ws://", 5) == 0 ? "80" : (is_ssl ? "443" : NULL);
     if (port == NULL)
     {
         printf("ERROR: Invalid URL\n");
         return -1;
     }
 
+    // Parse path
+    char *tokens = strchr(url, '/') + 2;
+    char *path   = strchr(tokens, '/') != NULL
+        ? (strchr(tokens, '?') != NULL && strchr(tokens, '/') > strchr(tokens, '?')
+             ? strchr(tokens, '?')
+             : strchr(tokens, '/'))
+        : (strchr(tokens, '?') != NULL ? strchr(tokens, '?') : "/");
+
     // Parse host
+    char *host = malloc(strlen(tokens) - strlen(path) + (strlen(path) == 1) + 1);
+    strncpy(host, tokens, strlen(tokens) - strlen(path) + (strlen(path) == 1));
     bool is_port = strchr(tokens, ':') != NULL;
     if (is_port)
     {
-        host = strtok(tokens, ":");
-        port = strtok(NULL, ":");
+        port        = strchr(tokens, ':') + 1;
+        *(port - 1) = '\0';
     }
-    else
-        host = tokens;
 
     // Build handshake request
     const char *fmt =
@@ -158,7 +128,7 @@ int websocket_connect(struct websocket *ws, const char *url)
         return -1;
     }
 
-    free(tokens_main);
+    free(host);
 
     // Send handshake request
     if (socket_send(&ws->socket, request, req_size) < 0)
