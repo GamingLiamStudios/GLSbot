@@ -184,7 +184,7 @@ int socket_recv(struct socket *socket, char *data, int size)
     struct ssl_context *ssl = (struct ssl_context *) socket->sock;
     int                 ret = BIO_read(ssl->bio, data, size);
 
-    if (ret <= 0)
+    if (ret < 0)
     {
         if (ret == -2)
         {
