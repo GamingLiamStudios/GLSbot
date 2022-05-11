@@ -65,7 +65,6 @@ struct socket socket_connect(const char *host, int port, bool is_ssl)
         return sock;
     }
 
-    printf("SSL\n");
     // Create TLS context
     SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
     if (ctx == NULL) return sock;

@@ -3,6 +3,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+
+#include <openssl/sha.h>
 
 char *base64_encode(unsigned char *data, int size)
 {
@@ -73,12 +76,12 @@ int websocket_connect(struct websocket *ws, const char *url)
     }
 
     // Parse URL
-    // URL format: ws(s)://host[:port]/path?query
+    // URL format: ws[s]://host[:port]/path?query
 
     char *host, *port, *path;
-    char *ws_type = strtok(tokens, "//");
-    tokens        = strtok(NULL, "//");
-    while ((port = strtok(NULL, "//")) != NULL) *(port - 1) = '/';    // uhhhhhh
+    char *ws_type = strtok(tokens, "/");
+    tokens        = strtok(NULL, "/");
+    while ((port = strtok(NULL, "/")) != NULL) *(port - 1) = '/';    // uhhhhhh
 
     // Parse path
     // 0 = no, 1 = /, 2 = ?
@@ -133,6 +136,7 @@ int websocket_connect(struct websocket *ws, const char *url)
         return -1;
     }
 
+    // Parse host
     bool is_port = strchr(tokens, ':') != NULL;
     if (is_port)
     {
@@ -141,12 +145,6 @@ int websocket_connect(struct websocket *ws, const char *url)
     }
     else
         host = tokens;
-
-    // Connect to server
-    printf("Host: %s\n", host);
-    printf("Port: %s\n", port);
-    printf("Path: %s\n", path);
-    printf("is_ssl: %d\n\n", is_ssl);
 
     // Build handshake request
     const char *fmt =
@@ -170,10 +168,8 @@ int websocket_connect(struct websocket *ws, const char *url)
     snprintf(request, req_size + 1, fmt, path, host, is_port ? port : "", key_b64);
 
     free(key);
-    free(key_b64);
+    // free(key_b64);
     if (strcmp(path, "/") != 0) free(path);
-
-    printf("Request:\n%s", request);
 
     // Connect to server
     int porti  = atoi(port);
@@ -190,15 +186,108 @@ int websocket_connect(struct websocket *ws, const char *url)
     socket_send(&ws->socket, request, req_size);
     free(request);
 
+    // While we wait for that, let's make the SHA-1 hash for verification
+    const char *vstr     = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    int         vstr_len = strlen(key_b64) + strlen(vstr);
+    char       *vstr_cat = malloc(vstr_len + 1);
+    strcpy(vstr_cat, key_b64);
+    strcat(vstr_cat, vstr);
+
+    u8 *vstr_sha1 = malloc(SHA_DIGEST_LENGTH);
+    SHA1((const u8 *) vstr_cat, vstr_len, vstr_sha1);
+    free(vstr_cat);
+
+    char *sha1_b64 = base64_encode(vstr_sha1, SHA_DIGEST_LENGTH);
+    free(vstr_sha1);
+
     // Receive handshake response
     char *response = malloc(1024);
-    int   res_size = socket_recv(&ws->socket, response, 1024);
+    memset(response, 0, 1024);
+    int res_size = socket_recv(&ws->socket, response, 1024);
 
-    printf("Response:\n%s\n", response);
+    // Verify we got a known response
+    char *line = strtok(response, "\r\n");
+    if (strcmp(line, "HTTP/1.1 101 Switching Protocols") != 0)
+    {
+        printf("ERROR: Unknown response\n%s\n", line);
+        free(response);
+        return -1;
+    }
 
-    // TODO: Parse response D:
+    // Parse response headers
+    int found = 3;
+    while ((line = strtok(NULL, "\r\n")) != NULL)
+    {
+        char *val = strchr(line, ':') + 2;
+        if (val == NULL)
+        {
+            printf("ERROR: Malformed response\n");
+            free(response);
+            if (sha1_b64) free(sha1_b64);
+            return -1;
+        }
+        char *key  = line;
+        *(val - 2) = '\0';
+
+        if (strcasecmp(key, "Upgrade") == 0)
+        {
+            if (strcasecmp(val, "websocket") != 0)
+            {
+                printf("ERROR: Invalid Upgrade\n");
+                free(response);
+                if (sha1_b64) free(sha1_b64);
+                return -1;
+            }
+            found--;
+        }
+
+        if (strcasecmp(key, "Connection") == 0)
+        {
+            if (strcasecmp(val, "Upgrade") != 0)
+            {
+                printf("ERROR: Invalid Connection\n");
+                free(response);
+                if (sha1_b64) free(sha1_b64);
+                return -1;
+            }
+            found--;
+        }
+
+        if (strcasecmp(key, "Sec-WebSocket-Accept") == 0)
+        {
+            if (strcmp(val, sha1_b64) != 0)
+            {
+                printf("ERROR: Invalid Sec-WebSocket-Accept\n");
+                free(response);
+                if (sha1_b64) free(sha1_b64);
+                return -1;
+            }
+            found--;
+        }
+
+        if (
+          strcasecmp(key, "Sec-WebSocket-Extensions") == 0 ||
+          strcasecmp(key, "Sec-WebSocket-Protocol") == 0)
+        {
+            printf("ERROR: Invalid header %s\n", key);
+            free(response);
+            if (sha1_b64) free(sha1_b64);
+            return -1;
+        }
+    }
+
+    if (found != 0)
+    {
+        printf("ERROR: Invalid response\n");
+        free(response);
+        if (sha1_b64) free(sha1_b64);
+        return -1;
+    }
 
     free(response);
+
+    // Suprise Pikachu Face
+    printf("Oh shit\n");
 
     return 0;
 }
