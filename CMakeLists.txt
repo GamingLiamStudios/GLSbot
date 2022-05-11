@@ -29,4 +29,4 @@ set_target_properties(main-executable PROPERTIES OUTPUT_NAME "GLSbot")
 target_include_directories(main-executable PUBLIC "extern")
 target_include_directories(main-executable PUBLIC "source") # to allow paths relative to project root
 
-target_link_libraries(main-executable PRIVATE m zlib json-c::json-c OpenSSL::SSL OpenSSL::Crypto)
+target_link_libraries(main-executable PRIVATE m zlib curl json-c::json-c OpenSSL::SSL OpenSSL::Crypto)
