@@ -4,8 +4,21 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <math.h>
 
 #include <openssl/sha.h>
+#include <arpa/inet.h>
+
+#define WS_FRAGMENT_SIZE 4096
+
+struct wsf_header
+{
+    u8 opcode : 4;
+    u8 rsv : 3;
+    u8 fin : 1;
+    u8 payload_len : 7;
+    u8 mask : 1;
+};
 
 char *base64_encode(unsigned char *data, int size)
 {
@@ -48,12 +61,11 @@ char *base64_encode(unsigned char *data, int size)
     return base64;
 }
 
-int websocket_connect(struct websocket *ws, const char *url)
+int websocket_connect(struct websocket *ws, const char *aurl)
 {
-    struct websocket websocket;
-    websocket.is_connected = false;
+    ws->is_connected = false;
 
-    if (url == NULL)
+    if (aurl == NULL)
     {
         printf("ERROR: Invalid host\n");
         return -1;
@@ -63,6 +75,15 @@ int websocket_connect(struct websocket *ws, const char *url)
         printf("ERROR: Invalid websocket\n");
         return -1;
     }
+
+    char *url = malloc(strlen(aurl) + 1);
+    if (url == NULL)
+    {
+        printf("ERROR: Out of memory\n");
+        return -1;
+    }
+    strcpy(url, aurl);
+    url[strlen(aurl)] = '\0';
 
     // Parse URL
     // URL format: ws[s]://host[:port]/path?query
@@ -90,7 +111,7 @@ int websocket_connect(struct websocket *ws, const char *url)
     bool is_port = strchr(tokens, ':') != NULL;
     if (is_port)
     {
-        port        = strchr(tokens, ':') + 1;
+        port        = strchr(host, ':') + 1;
         *(port - 1) = '\0';
     }
 
@@ -258,8 +279,247 @@ int websocket_connect(struct websocket *ws, const char *url)
 
     free(response);
 
-    // Suprise Pikachu Face
-    printf("Oh shit\n");
+    ws->is_connected = true;
+    printf("Successfully connected to server\n");
 
     return 0;
+}
+
+void websocket_close(struct websocket *ws)
+{
+    if (!ws->is_connected) return;
+    websocket_send(ws, WS_OPCODE_CLOSE, "", 0);
+    ws->is_connected = false;
+    socket_close(ws->socket);
+}
+
+int websocket_send(struct websocket *ws, enum ws_opcode type, const char *data, u64 size)
+{
+    if (!ws->is_connected) return -1;
+
+    u8 payload[WS_FRAGMENT_SIZE + sizeof(struct wsf_header) + sizeof(u16) + sizeof(u32)];
+
+    int fragments = ceil(size / (double) (WS_FRAGMENT_SIZE));
+    for (int f = 0; f < fragments; f++)
+    {
+        struct wsf_header *header = (struct wsf_header *) payload;
+        header->fin               = (f == fragments - 1);
+        header->rsv               = 0;
+        header->opcode            = (f == 0) ? type : WS_OPCODE_CONTINUATION;
+        header->mask              = 1;
+
+        u64 rem             = size - (f * WS_FRAGMENT_SIZE);
+        u16 payload_len     = (rem > WS_FRAGMENT_SIZE) ? WS_FRAGMENT_SIZE : rem;
+        header->payload_len = payload_len;
+        if (payload_len > 125)
+        {
+            header->payload_len = 126;
+            u8 *payload_lenb    = (u8 *) (payload + sizeof(struct wsf_header));
+            payload_lenb[0]     = (payload_len >> 8) & 0xFF;
+            payload_lenb[1]     = payload_len & 0xFF;
+        }
+
+        u8 *mask_key =
+          (u8 *) (payload + sizeof(struct wsf_header) + (payload_len > 125 ? sizeof(u16) : 0));
+        mask_key[0] = rand() % 256;
+        mask_key[1] = rand() % 256;
+        mask_key[2] = rand() % 256;
+        mask_key[3] = rand() % 256;
+
+        u8 *payload_data =
+          (u8
+             *) (payload + sizeof(struct wsf_header) + (payload_len > 125 ? sizeof(u16) : 0) + sizeof(u32));
+        memcpy(payload_data, data + f * WS_FRAGMENT_SIZE, payload_len);
+
+        for (int i = 0; i < payload_len; i++) payload_data[i] ^= mask_key[i % 4];
+
+        if (
+          socket_send(
+            &ws->socket,
+            (const char *) payload,
+            sizeof(struct wsf_header) + (payload_len > 125 ? sizeof(u16) : 0) + sizeof(u32) +
+              payload_len) < 0)
+        {
+            printf("ERROR: Failed to send data\n");
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+int websocket_recv(struct websocket *ws, char *data, u64 *size)
+{
+    if (!ws->is_connected) return -1;
+
+    bool buffer = data != NULL;
+    bool frag   = false;
+    u64  len    = 0;
+
+    enum ws_opcode type = WS_OPCODE_CONTINUATION;
+
+    struct wsf_header frame;
+    while (true)
+    {
+        int res = socket_recv(&ws->socket, (char *) &frame, sizeof(struct wsf_header));
+        if (res < 0) return -1;
+
+        if (frame.rsv)
+        {
+            printf("ERROR: RSV bits not implemented\n");
+            return -1;
+        }
+
+        // Check for invalid opcode
+        switch (frame.opcode)
+        {
+        case WS_OPCODE_CONTINUATION:
+        case WS_OPCODE_BINARY:
+        case WS_OPCODE_TEXT:
+        case WS_OPCODE_PING:
+        case WS_OPCODE_PONG:
+        case WS_OPCODE_CLOSE: break;
+        default: printf("ERROR: Invalid opcode\n"); return -1;
+        }
+
+        // Verify payload
+        bool control = true;
+        switch (frame.opcode)
+        {
+        case WS_OPCODE_CONTINUATION:
+            if (!frag)
+            {
+                printf("ERROR: Fragmented frame without a start\n");
+                return -1;
+            }
+        case WS_OPCODE_BINARY:
+        case WS_OPCODE_TEXT: control = false; break;
+        default:
+            if (!frame.fin)
+            {
+                printf("ERROR: Invalid fragment\n");
+                return -1;
+            }
+            if (frame.payload_len > 125)
+            {
+                printf("ERROR: Invalid payload length\n");
+                return -1;
+            }
+        }
+
+        if (!control && !frag) type = frame.opcode;
+
+        // Grab Extended Payload Length if necessary
+        u64 data_size = frame.payload_len;
+        switch (data_size)
+        {
+        case 126:    // 16 bit Extended length
+        {
+            u8 data_size_16[2];
+            res = socket_recv(&ws->socket, (char *) &data_size_16, sizeof(u16));
+            if (res < 0)
+            {
+                printf("ERROR: Unable to read frame\n");
+                return -1;
+            }
+
+            data_size = data_size_16[0] << 8 | data_size_16[1];
+            break;
+        }
+        case 127:    // 64 bit Extended length
+        {
+            u64 data_size_64;
+            res = socket_recv(&ws->socket, (char *) &data_size_64, sizeof(u64));
+            if (res < 0)
+            {
+                printf("ERROR: Unable to read frame\n");
+                return -1;
+            }
+
+            // Check for little-endian
+            u16 test = 1;
+            if (*(u8 *) &test == 1)
+            {
+                // Cross platform byteswap
+                data_size_64 = ((data_size_64 & 0x00000000000000FFu) << 56u) |
+                  ((data_size_64 & 0x000000000000FF00u) << 40u) |
+                  ((data_size_64 & 0x0000000000FF0000u) << 24u) |
+                  ((data_size_64 & 0x00000000FF000000u) << 8u) |
+                  ((data_size_64 & 0x000000FF00000000u) >> 8u) |
+                  ((data_size_64 & 0x0000FF0000000000u) >> 24u) |
+                  ((data_size_64 & 0x00FF000000000000u) >> 40u) |
+                  ((data_size_64 & 0xFF00000000000000u) >> 56u);
+            }
+
+            data_size = data_size_64;
+            break;
+        }
+        default: break;
+        }
+
+        // Grab masking-key if present
+        u8 mask_key[4];
+        if (frame.mask)
+        {
+            res = socket_recv(&ws->socket, (char *) &mask_key, sizeof(mask_key));
+            if (res < 0)
+            {
+                printf("ERROR: Unable to read frame\n");
+                return -1;
+            }
+        }
+
+        // Read payload
+        if (buffer)
+        {
+            if (len + data_size > *size)
+            {
+                printf("ERROR: Payload too large\n");
+                return -1;
+            }
+
+            res = socket_recv(&ws->socket, data + len, data_size);
+        }
+        else
+        {
+            if (len == 0)
+                data = malloc(data_size);
+            else
+            {
+                char *tmp = realloc(data, len + data_size);
+                if (tmp == NULL)
+                {
+                    printf("ERROR: Unable to allocate memory\n");
+                    return -1;
+                }
+                data = tmp;
+            }
+            res = socket_recv(&ws->socket, data + len, data_size);
+        }
+
+        // Unmask data
+        if (frame.mask)
+            for (int i = 0; i < data_size; i++) data[len + i] ^= mask_key[i & 0b11];
+
+        len += data_size;
+
+        // Handle control frames
+        switch (frame.opcode)
+        {
+        case WS_OPCODE_CLOSE:
+            printf("Server closed connection\n");
+            ws->is_connected = false;
+            socket_close(ws->socket);
+            return WS_OPCODE_CLOSE;
+        case WS_OPCODE_PING: websocket_send(ws, WS_OPCODE_PONG, data, data_size);
+        default: break;
+        }
+
+        // Check for continuation
+        if (frame.fin && !control) break;
+    }
+
+    *size = len;
+
+    return type;
 }

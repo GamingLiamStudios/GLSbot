@@ -37,11 +37,13 @@ struct socket socket_connect(const char *host, int port, bool is_ssl)
         return sock;
     }
 
+    // use getaddrinfo
     server = gethostbyname(host);
     if (server == NULL)
     {
-        fprintf(stderr, "ERROR, no such host\n");
-        exit(0);
+        printf("gethostbyname: %s\n", hstrerror(h_errno));
+        printf("host: %s\n", host);
+        return sock;
     }
 
     bzero((char *) &serv_addr, sizeof(serv_addr));
